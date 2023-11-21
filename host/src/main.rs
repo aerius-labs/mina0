@@ -11,12 +11,13 @@ use kimchi::o1_utils::FieldHelpers;
 use kimchi::poly_commitment::evaluation_proof::OpeningProof;
 use kimchi::proof::ProverProof;
 use kimchi::prover_index::ProverIndex;
+use kimchi::verifier_index::VerifierIndex;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::Error;
 
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof {
-    index: ProverIndex<Vesta, OpeningProof<Vesta>>,
+    index: VerifierIndex<Vesta, OpeningProof<Vesta>>,
     // group_map: BWParameters<VestaParameters>,
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
@@ -42,12 +43,16 @@ fn main() {
     let (proof, public_input) = ctx.create_proof();
 
     let ctx_with_proof = ContextWithProof {
-        index: ctx.index,
+        index: ctx.verifier_index,
         proof,
         public_input: public_input.into_iter().map(|x| x.to_bytes()).collect(),
     };
 
+    println!("{}", std::mem::size_of_val(&ctx_with_proof));
+
     let env = ExecutorEnv::builder().write(&ctx_with_proof).unwrap().build().unwrap();
+
+    println!("proving");
 
     // Obtain the default prover.
     let prover = default_prover();
@@ -58,7 +63,7 @@ fn main() {
     // TODO: Implement code for retrieving receipt journal here.
 
     // For example:
-    let _output: u32 = receipt.journal.decode().unwrap();
+    let _output: ContextWithProof = receipt.journal.decode().unwrap();
 
     // Optional: Verify receipt to confirm that recipients will also be able to
     // verify your receipt
