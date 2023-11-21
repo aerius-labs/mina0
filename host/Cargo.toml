@@ -8,5 +8,5 @@ methods = { path = "../methods" }
 risc0-zkvm = { version = "0.19.1" }
 env_logger = "0.10"
 serde = "1.0"
-kimchi = { git = "https://github.com/o1-labs/proof-systems.git", branch = "master" }
+kimchi = { path = "./../../proof-systems/kimchi" }
 #mina-tree = { git = "https://github.com/openmina/openmina.git", rev = "5f7a410cc2c07572afad055477ce2a5c2d768e5b"}
