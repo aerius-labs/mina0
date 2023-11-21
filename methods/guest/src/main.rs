@@ -34,7 +34,7 @@ struct ContextWithProof {
 pub fn main() {
     // read the input
     let input: ContextWithProof = env::read();
-    let public_input: Vec<Fp> = input.public_input.into_iter().map(|x| Fp::from_bytes(&x).unwrap()).collect();
+    let public_input: Vec<Fp> = input.public_input.iter().map(|x| Fp::from_bytes(x).unwrap()).collect();
     let group_map = BWParameters::<VestaParameters>::setup();
 
     // batch_verify(&input.index, &group_map, &vec![(input.proof, input.public_input)]);
@@ -49,6 +49,6 @@ pub fn main() {
     // TODO: do something with the input
 
     // write public output to the journal
-    let val: u64 = 10;
-    env::commit(&val);
+    // let val: u64 = 10;
+    env::commit(&input);
 }
