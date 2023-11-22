@@ -2,6 +2,8 @@
 // If you want to try std support, also update the guest Cargo.toml file
 // #![no_std]  // std support is experimental
 
+use std::io::BufReader;
+use std::sync::Arc;
 use kimchi::bench::BenchmarkCtx;
 use kimchi::groupmap::{BWParameters, GroupMap};
 use kimchi::mina_curves::pasta::{Fp, Vesta, VestaParameters};
@@ -9,6 +11,7 @@ use kimchi::mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use kimchi::mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
 use kimchi::o1_utils::FieldHelpers;
 use kimchi::poly_commitment::evaluation_proof::OpeningProof;
+use kimchi::poly_commitment::srs::SRS;
 use kimchi::precomputed_srs::get_srs;
 use kimchi::proof::ProverProof;
 use kimchi::verifier::{batch_verify, Context, verify};
@@ -30,12 +33,18 @@ struct ContextWithProof {
     public_input: Vec<Vec<u8>>,
 }
 
-// static SRS: [u8; include_bytes!("../srs/vesta.srs").len()] = *include_bytes!("../srs/vesta.srs");
+// static SRS_BYTES: [u8; include_bytes!("vesta.srs").len()] = *include_bytes!("vesta.srs");
+
 pub fn main() {
     // read the input
-    let input: ContextWithProof = env::read();
+    let mut input: ContextWithProof = env::read();
     let public_input: Vec<Fp> = input.public_input.iter().map(|x| Fp::from_bytes(x).unwrap()).collect();
     let group_map = BWParameters::<VestaParameters>::setup();
+
+    // let buf_reader = BufReader::new(&SRS_BYTES[..]);
+    // let srs = SRS::<Vesta>::deserialize(buf_reader).unwrap();
+    // input.index.srs = Arc::new(srs);
+    let srs = SRS::<Vesta>::create(17);
 
     // batch_verify(&input.index, &group_map, &vec![(input.proof, input.public_input)]);
     batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
