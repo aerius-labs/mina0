@@ -12,3 +12,5 @@ risc0-zkvm = { version = "0.19.1", features = [ "std" ] }
 kimchi = { path = "../../../proof-systems/kimchi" }
 #mina-tree = { git = "https://github.com/openmina/openmina.git", rev = "5f7a410cc2c07572afad055477ce2a5c2d768e5b"}
 serde = "1.0"
+rmp-serde = "1.1.2"
+lazy_static = "1.4.0"

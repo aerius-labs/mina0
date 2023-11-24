@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 methods = { path = "../methods" }
-risc0-zkvm = { version = "0.19.1", festures = ["cuda"] }
+risc0-zkvm = { version = "0.19.1", features = ["cuda"] }
 env_logger = "0.10"
 serde = "1.0"
 kimchi = { path = "./../../proof-systems/kimchi" }
