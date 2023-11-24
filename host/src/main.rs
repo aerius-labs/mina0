@@ -18,11 +18,13 @@ use serde::de::Error;
 
 use std::io::{BufWriter, Read, Write};
 use std::mem;
+use kimchi::poly_commitment::{PolyComm, SRS};
 use rmp_serde;
 
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof {
     index: VerifierIndex<Vesta, OpeningProof<Vesta>>,
+    // lagrange_basis: Vec<PolyComm<Vesta>>,
     // group_map: BWParameters<VestaParameters>,
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
@@ -44,16 +46,12 @@ fn main() {
     // creates an ExecutorEnvBuilder. When you're done adding input, call
     // ExecutorEnvBuilder::build().
 
-    let ctx = BenchmarkCtx::new(17);
+    let ctx = BenchmarkCtx::new(12);
     let (proof, public_input) = ctx.create_proof();
-
-    // write the verifier_index.srs() bytes directly from memory to file
-    let file = File::create("vesta").unwrap();
-    let bufwriter = BufWriter::new(file);
-    ctx.verifier_index.srs().serialize(&mut rmp_serde::Serializer::new(bufwriter)).unwrap();
 
     let ctx_with_proof = ContextWithProof {
         index: ctx.verifier_index,
+        // lagrange_basis: ctx.verifier_index.srs().get_lagrange_basis(ctx.verifier_index.domain.size()).unwrap().clone(),
         proof,
         public_input: public_input.into_iter().map(|x| x.to_bytes()).collect(),
     };
