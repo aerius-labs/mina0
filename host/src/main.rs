@@ -71,23 +71,17 @@ fn main() {
 
     println!("{}", mem::size_of_val(&ctx_with_proof));
 
-    // let env = ExecutorEnv::builder().write(&ctx_with_proof).unwrap().build().unwrap();
-
     println!("proving");
 
-    run_bonsai(ctx_with_proof).unwrap();
-
-    // Obtain the default prover.
-    // let prover = default_prover();
-
-    // Produce a receipt by proving the specified ELF binary.
-
-    // let receipt = prover.prove_elf(env, KIMCHI0_ELF).unwrap();
-
-    // TODO: Implement code for retrieving receipt journal here.
-
-    // For example:
-    // let _output: ContextWithProof = receipt.journal.decode().unwrap();
+    // if env variable RISC0_PROVER is set to bonsai, prove with bonsai, else prove locally
+    if std::env::var("RISC0_PROVER").unwrap_or(String::new()) == "bonsai" {
+        run_bonsai(ctx_with_proof).unwrap();
+    } else {
+        let env = ExecutorEnv::builder().write(&ctx_with_proof).unwrap().build().unwrap();
+        let prover = default_prover();
+        let receipt = prover.prove_elf(env, KIMCHI0_ELF).unwrap();
+        let _output: ContextWithProof = receipt.journal.decode().unwrap();
+    }
 
     // Optional: Verify receipt to confirm that recipients will also be able to
     // verify your receipt
