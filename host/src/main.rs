@@ -4,7 +4,7 @@ use std::fs::File;
 use methods::{
     KIMCHI0_ELF, KIMCHI0_ID
 };
-use risc0_zkvm::{default_prover, ExecutorEnv};
+use risc0_zkvm::{default_prover, ExecutorEnv, MemoryImage, Program, ProverOpts, Receipt, VerifierContext};
 use kimchi::bench::BenchmarkCtx;
 use kimchi::groupmap::BWParameters;
 use kimchi::mina_curves::pasta::{Fp, Vesta, VestaParameters};
@@ -16,10 +16,17 @@ use kimchi::verifier_index::VerifierIndex;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::Error;
 
-use std::io::{BufWriter, Read, Write};
+use risc0_zkvm::{
+    serde::to_vec, GUEST_MAX_MEM, PAGE_SIZE,
+};
+
+use std::io::{BufReader, Read, Write};
 use std::mem;
-use kimchi::poly_commitment::{PolyComm, SRS};
+use std::time::Duration;
+use bonsai_sdk::alpha::Client;
 use rmp_serde;
+
+use anyhow::{Result};
 
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof {
@@ -29,6 +36,8 @@ struct ContextWithProof {
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
 }
+
+static SRS_BYTES: [u8; include_bytes!("../../srs/vesta.srs").len()] = *include_bytes!("../../srs/vesta.srs");
 
 fn main() {
     // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
@@ -46,7 +55,11 @@ fn main() {
     // creates an ExecutorEnvBuilder. When you're done adding input, call
     // ExecutorEnvBuilder::build().
 
-    let ctx = BenchmarkCtx::new(12);
+    let mut ctx = BenchmarkCtx::new(12);
+
+    // let srs = SRS::<Vesta>::deserialize(&mut rmp_serde::Deserializer::new(BufReader::new(&SRS_BYTES[..]))).unwrap();
+    // ctx.verifier_index.srs = Arc::new(srs);
+
     let (proof, public_input) = ctx.create_proof();
 
     let ctx_with_proof = ContextWithProof {
@@ -56,26 +69,80 @@ fn main() {
         public_input: public_input.into_iter().map(|x| x.to_bytes()).collect(),
     };
 
-    println!("{}", std::mem::size_of_val(&ctx_with_proof));
+    println!("{}", mem::size_of_val(&ctx_with_proof));
 
-    let env = ExecutorEnv::builder().write(&ctx_with_proof).unwrap().build().unwrap();
+    // let env = ExecutorEnv::builder().write(&ctx_with_proof).unwrap().build().unwrap();
 
     println!("proving");
 
+    run_bonsai(ctx_with_proof).unwrap();
+
     // Obtain the default prover.
-    let prover = default_prover();
+    // let prover = default_prover();
 
     // Produce a receipt by proving the specified ELF binary.
-    let receipt = prover.prove_elf(env, KIMCHI0_ELF).unwrap();
+
+    // let receipt = prover.prove_elf(env, KIMCHI0_ELF).unwrap();
 
     // TODO: Implement code for retrieving receipt journal here.
 
     // For example:
-    let _output: ContextWithProof = receipt.journal.decode().unwrap();
+    // let _output: ContextWithProof = receipt.journal.decode().unwrap();
 
     // Optional: Verify receipt to confirm that recipients will also be able to
     // verify your receipt
-    receipt.verify(KIMCHI0_ID).unwrap();
+    // receipt.verify(KIMCHI0_ID).unwrap();
+}
+
+fn run_bonsai(input_data: ContextWithProof) -> Result<()> {
+    let client = Client::from_env(risc0_zkvm::VERSION)?;
+
+    // create the memoryImg, upload it and return the imageId
+    let img_id = {
+        let program = Program::load_elf(KIMCHI0_ELF, GUEST_MAX_MEM as u32)?;
+        let image = MemoryImage::new(&program, PAGE_SIZE as u32)?;
+        let image_id = hex::encode(image.compute_id());
+        let image = bincode::serialize(&image).expect("Failed to serialize memory img");
+        client.upload_img(&image_id, image)?;
+        image_id
+    };
+
+    // Prepare input data and upload it.
+    let input_data = to_vec(&input_data).unwrap();
+    let input_data = bytemuck::cast_slice(&input_data).to_vec();
+    let input_id = client.upload_input(input_data)?;
+
+    // Start a session running the prover
+    let session = client.create_session(img_id, input_id)?;
+    loop {
+        let res = session.status(&client)?;
+        if res.status == "RUNNING" {
+            std::thread::sleep(Duration::from_secs(15));
+            continue;
+        }
+        if res.status == "SUCCEEDED" {
+            // Download the receipt, containing the output
+            let receipt_url = res
+                .receipt_url
+                .expect("API error, missing receipt on completed session");
+
+            let receipt_buf = client.download(&receipt_url)?;
+            let receipt: Receipt = bincode::deserialize(&receipt_buf)?;
+            receipt
+                .verify(KIMCHI0_ID)
+                .expect("Receipt verification failed");
+        } else {
+            if res.error_msg.is_some() {
+                panic!("Workflow exited: {}", res.error_msg.unwrap());
+            } else {
+                panic!("Workflow exited: {}", res.status);
+            }
+        }
+
+        break;
+    }
+
+    Ok(())
 }
 
 fn write_to_file<T>(path: &str, obj: &T) {
