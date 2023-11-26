@@ -37,7 +37,7 @@ struct ContextWithProof {
 static SRS_BYTES: [u8; include_bytes!("vesta.srs").len()] = *include_bytes!("vesta.srs");
 
 lazy_static! {
-    static ref LOADED_SRS: SRS<Vesta> = SRS::<Vesta>::deserialize(&mut rmp_serde::Deserializer::new(BufReader::new(&SRS_BYTES[..]))).unwrap();
+    static ref LOADED_SRS: Arc<SRS<Vesta>> = Arc::new(SRS::<Vesta>::deserialize(&mut rmp_serde::Deserializer::new(BufReader::new(&SRS_BYTES[..]))).unwrap());
 }
 
 pub fn main() {
@@ -46,9 +46,7 @@ pub fn main() {
     let public_input: Vec<Fp> = input.public_input.iter().map(|x| Fp::from_bytes(x).unwrap()).collect();
     let group_map = BWParameters::<VestaParameters>::setup();
 
-    input.index.srs = Arc::new(*LOADED_SRS);
-
-    panic!("srs size: {}", input.index.srs.max_degree());
+    input.index.srs = LOADED_SRS.clone();
 
     // batch_verify(&input.index, &group_map, &vec![(input.proof, input.public_input)]);
     batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
