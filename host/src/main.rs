@@ -144,22 +144,3 @@ fn run_bonsai(input_data: ContextWithProof) -> Result<()> {
 
     Ok(())
 }
-
-fn write_to_file<T>(path: &str, obj: &T) {
-    let obj_ptr: *const T = obj;
-    let byte_slice: &[u8] = unsafe {
-        std::slice::from_raw_parts(obj_ptr as *const u8, mem::size_of::<T>())
-    };
-
-    let mut file = File::create(path).unwrap();
-    file.write_all(byte_slice).unwrap();
-}
-
-fn read_from_file<T>(path: &str) -> T {
-    let mut file = File::open(path).unwrap();
-    let mut buffer = vec![0u8; mem::size_of::<T>()];
-    file.read_exact(&mut buffer).unwrap();
-
-    let obj_ptr: *const T = buffer.as_ptr() as *const T;
-    unsafe { obj_ptr.read() }
-}
