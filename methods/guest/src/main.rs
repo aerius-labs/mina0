@@ -50,7 +50,7 @@ pub fn main() {
         std::mem::transmute::<&u8, &SRS<Vesta>>(&SRS_BYTES[0])
     };
 
-    panic!("srs: {:?}", srs);
+    panic!("srs loaded");
 
     input.index.srs = Arc::new(srs.clone());
 
