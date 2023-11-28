@@ -36,9 +36,6 @@ struct ContextWithProof {
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
 }
-
-static SRS_BYTES: [u8; include_bytes!("../../srs/vesta.srs").len()] = *include_bytes!("../../srs/vesta.srs");
-
 fn main() {
     // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
     env_logger::init();
