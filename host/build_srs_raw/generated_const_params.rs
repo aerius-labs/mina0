@@ -1,0 +1,1 @@
+pub const VESTA_FIELD_PARAMS: usize = 131072;

@@ -1,0 +1,14 @@
+[package]
+name = "secondary-build"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kimchi = { path = "./../../../proof-systems/kimchi" }
+num-traits = "0.2.17"
+#mina-tree = { git = "https://github.com/openmina/openmina.git", rev = "5f7a410cc2c07572afad055477ce2a5c2d768e5b"}
+rmp-serde = "1.1.2"
+
+[[bin]]
+name = "secondary-build"
+path = "main.rs"
