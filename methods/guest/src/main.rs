@@ -21,6 +21,8 @@ use lazy_static::lazy_static;
 
 risc0_zkvm::guest::entry!(main);
 
+pub const VESTA_FIELD_PARAMS: usize = 131072;
+
 type SpongeParams = PlonkSpongeConstantsKimchi;
 type BaseSponge = DefaultFqSponge<VestaParameters, SpongeParams>;
 type ScalarSponge = DefaultFrSponge<Fp, SpongeParams>;
@@ -34,11 +36,13 @@ struct ContextWithProof {
     public_input: Vec<Vec<u8>>,
 }
 
-static SRS_BYTES: [u8; include_bytes!("vesta.srs").len()] = *include_bytes!("vesta.srs");
+#[repr(C)]
+pub struct SrsSized<G, const N: usize> {
+    pub g: [G; N],
+    pub h: G
+}
 
-// lazy_static! {
-//     static ref LOADED_SRS: Arc<SRS<Vesta>> = Arc::new(SRS::<Vesta>::deserialize(&mut rmp_serde::Deserializer::new(BufReader::new(&SRS_BYTES[..]))).unwrap());
-// }
+static SRS_BYTES: [u8; include_bytes!("../../../srs/vesta.bin").len()] = *include_bytes!("../../../srs/vesta.bin");
 
 pub fn main() {
     // read the input
@@ -47,12 +51,12 @@ pub fn main() {
     let group_map = BWParameters::<VestaParameters>::setup();
 
     let srs = unsafe {
-        std::mem::transmute::<&u8, &SRS<Vesta>>(&SRS_BYTES[0])
+        std::mem::transmute::<&u8, &SrsSized<Vesta, VESTA_FIELD_PARAMS>>(&SRS_BYTES[0])
     };
 
     panic!("srs loaded");
 
-    input.index.srs = Arc::new(srs.clone());
+    // input.index.srs = Arc::new(srs.clone());
 
     // batch_verify(&input.index, &group_map, &vec![(input.proof, input.public_input)]);
     batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
