@@ -18,7 +18,7 @@ pub struct SrsSized<G, const N: usize> {
 
 fn main () {
     // Define the desired stack size in bytes
-    let stack_size = 32 * 1024 * 1024; // 16 MB
+    let stack_size = 32 * 1024 * 1024; // 32 MB
 
     // Create a new thread with the specified stack size
     let builder = thread::Builder::new().stack_size(stack_size);
