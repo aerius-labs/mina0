@@ -1,14 +1,16 @@
 #![no_main]
+#![feature(once_cell)]
 // If you want to try std support, also update the guest Cargo.toml file
 // #![no_std]  // std support is experimental
 
+use std::cell::OnceCell;
 use std::io::BufReader;
 use std::sync::Arc;
 use ark_ff::{Field, One, PrimeField};
 use kimchi::circuits::argument::ArgumentType;
 use kimchi::circuits::berkeley_columns::Column;
 use kimchi::circuits::constraints::ConstraintSystem;
-use kimchi::circuits::expr::{Constants, PolishToken};
+use kimchi::circuits::expr::{Constants, Linearization, PolishToken};
 use kimchi::circuits::gate::GateType;
 use kimchi::circuits::lookup::lookups::LookupPattern;
 use kimchi::circuits::lookup::tables::combine_table;
@@ -29,14 +31,17 @@ use kimchi::poly_commitment::{OpenProof, PolyComm, SRS};
 use kimchi::poly_commitment::commitment::{BatchEvaluationProof, Evaluation};
 use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverProof};
 use kimchi::verifier::Context;
-use kimchi::verifier_index::VerifierIndex;
+use kimchi::verifier_index::{LookupVerifierIndex, VerifierIndex};
 use kimchi::circuits::wires::COLUMNS;
 use risc0_zkvm::guest::env;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use rand::thread_rng;
 use ark_ec::AffineCurve;
 use ark_poly::domain::EvaluationDomain;
 use ark_poly::Polynomial;
+use ark_poly::{univariate::DensePolynomial,  Radix2EvaluationDomain as D};
+use kimchi::alphas::Alphas;
+use serde_with::serde_as;
 
 risc0_zkvm::guest::entry!(main);
 
@@ -47,6 +52,103 @@ pub type Result<T> = std::result::Result<T, VerifyError>;
 type SpongeParams = PlonkSpongeConstantsKimchi;
 type BaseSponge = DefaultFqSponge<VestaParameters, SpongeParams>;
 type ScalarSponge = DefaultFrSponge<Fp, SpongeParams>;
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VerifierIndex<G: KimchiCurve, OpeningProof: OpenProof<G>> {
+    /// evaluation domain
+    #[serde_as(as = "kimchi::o1_utils::serialization::SerdeAs")]
+    pub domain: D<G::ScalarField>,
+    /// maximal size of polynomial section
+    pub max_poly_size: usize,
+    /// the number of randomized rows to achieve zero knowledge
+    pub zk_rows: u64,
+    /// polynomial commitment keys
+    #[serde(skip)]
+    #[serde(bound(deserialize = "SrsSized<G, VESTA_FIELD_PARAMS>: Default"))]
+    pub srs: Arc<SrsSized<G, VESTA_FIELD_PARAMS>>,
+    /// number of public inputs
+    pub public: usize,
+    /// number of previous evaluation challenges, for recursive proving
+    pub prev_challenges: usize,
+
+    // index polynomial commitments
+    /// permutation commitment array
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub sigma_comm: [PolyComm<G>; PERMUTS],
+    /// coefficient commitment array
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub coefficients_comm: [PolyComm<G>; COLUMNS],
+    /// coefficient commitment array
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub generic_comm: PolyComm<G>,
+
+    // poseidon polynomial commitments
+    /// poseidon constraint selector polynomial commitment
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub psm_comm: PolyComm<G>,
+
+    // ECC arithmetic polynomial commitments
+    /// EC addition selector polynomial commitment
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub complete_add_comm: PolyComm<G>,
+    /// EC variable base scalar multiplication selector polynomial commitment
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub mul_comm: PolyComm<G>,
+    /// endoscalar multiplication selector polynomial commitment
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub emul_comm: PolyComm<G>,
+    /// endoscalar multiplication scalar computation selector polynomial commitment
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub endomul_scalar_comm: PolyComm<G>,
+
+    /// RangeCheck0 polynomial commitments
+    #[serde(bound = "Option<PolyComm<G>>: Serialize + DeserializeOwned")]
+    pub range_check0_comm: Option<PolyComm<G>>,
+
+    /// RangeCheck1 polynomial commitments
+    #[serde(bound = "Option<PolyComm<G>>: Serialize + DeserializeOwned")]
+    pub range_check1_comm: Option<PolyComm<G>>,
+
+    /// Foreign field addition gates polynomial commitments
+    #[serde(bound = "Option<PolyComm<G>>: Serialize + DeserializeOwned")]
+    pub foreign_field_add_comm: Option<PolyComm<G>>,
+
+    /// Foreign field multiplication gates polynomial commitments
+    #[serde(bound = "Option<PolyComm<G>>: Serialize + DeserializeOwned")]
+    pub foreign_field_mul_comm: Option<PolyComm<G>>,
+
+    /// Xor commitments
+    #[serde(bound = "Option<PolyComm<G>>: Serialize + DeserializeOwned")]
+    pub xor_comm: Option<PolyComm<G>>,
+
+    /// Rot commitments
+    #[serde(bound = "Option<PolyComm<G>>: Serialize + DeserializeOwned")]
+    pub rot_comm: Option<PolyComm<G>>,
+
+    /// wire coordinate shifts
+    #[serde_as(as = "[kimchi::o1_utils::serialization::SerdeAs; PERMUTS]")]
+    pub shift: [G::ScalarField; PERMUTS],
+    /// zero-knowledge polynomial
+    #[serde(skip)]
+    pub permutation_vanishing_polynomial_m: OnceCell<DensePolynomial<G::ScalarField>>,
+    // TODO(mimoo): isn't this redundant with domain.d1.group_gen ?
+    /// domain offset for zero-knowledge
+    #[serde(skip)]
+    pub w: OnceCell<G::ScalarField>,
+    /// endoscalar coefficient
+    #[serde(skip)]
+    pub endo: G::ScalarField,
+
+    #[serde(bound = "PolyComm<G>: Serialize + DeserializeOwned")]
+    pub lookup_index: Option<LookupVerifierIndex<G>>,
+
+    #[serde(skip)]
+    pub linearization: Linearization<Vec<PolishToken<G::ScalarField, Column>>, Column>,
+    /// The mapping between powers of alpha and constraints
+    #[serde(skip)]
+    pub powers_of_alpha: Alphas<G::ScalarField>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof {
@@ -74,8 +176,6 @@ pub fn main() {
     let srs = unsafe {
         std::mem::transmute::<&u8, &SrsSized<Vesta, VESTA_FIELD_PARAMS>>(&SRS_BYTES[0])
     };
-
-    panic!("srs loaded");
 
     // input.index.srs = Arc::new(srs.clone());
 
