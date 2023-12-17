@@ -4,9 +4,8 @@
 // #![no_std]  // std support is experimental
 
 use std::cell::OnceCell;
-use std::io::BufReader;
 use std::sync::Arc;
-use ark_ff::{Field, One, PrimeField};
+use ark_ff::{Field, One, PrimeField, UniformRand, Zero as _Zero};
 use kimchi::circuits::argument::ArgumentType;
 use kimchi::circuits::berkeley_columns::Column;
 use kimchi::circuits::constraints::ConstraintSystem;
@@ -22,30 +21,31 @@ use kimchi::groupmap::{BWParameters, GroupMap};
 use kimchi::mina_curves::pasta::{Fp, Vesta, VestaParameters};
 use kimchi::mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use kimchi::mina_poseidon::FqSponge;
-use kimchi::mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-use kimchi::o1_utils::FieldHelpers;
+use kimchi::mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge, ScalarChallenge};
+use kimchi::o1_utils::{FieldHelpers, math};
 use kimchi::oracles::OraclesResult;
 use kimchi::plonk_sponge::FrSponge;
-use kimchi::poly_commitment::evaluation_proof::OpeningProof;
+use kimchi::poly_commitment::evaluation_proof::{Challenges, OpeningProof};
 use kimchi::poly_commitment::{OpenProof, PolyComm, SRS};
-use kimchi::poly_commitment::commitment::{BatchEvaluationProof, Evaluation};
+use kimchi::poly_commitment::commitment::{b_poly, b_poly_coefficients, BatchEvaluationProof, BlindedCommitment, combine_commitments, combined_inner_product, CommitmentCurve, Evaluation, shift_scalar, to_group};
 use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverProof};
-use kimchi::verifier::Context;
-use kimchi::verifier_index::{LookupVerifierIndex, VerifierIndex};
+use kimchi::verifier_index::{LookupVerifierIndex};
 use kimchi::circuits::wires::COLUMNS;
 use risc0_zkvm::guest::env;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use rand::thread_rng;
-use ark_ec::AffineCurve;
+use rand::{CryptoRng, RngCore, thread_rng};
+use ark_ec::{AffineCurve, ProjectiveCurve};
+use ark_ec::msm::VariableBaseMSM;
 use ark_poly::domain::EvaluationDomain;
-use ark_poly::Polynomial;
-use ark_poly::{univariate::DensePolynomial,  Radix2EvaluationDomain as D};
+use ark_poly::{univariate::DensePolynomial, Radix2EvaluationDomain as D, Evaluations};
 use kimchi::alphas::Alphas;
+use kimchi::poly_commitment::error::CommitmentError;
+use kimchi::poly_commitment::srs::endos;
 use serde_with::serde_as;
 
 risc0_zkvm::guest::entry!(main);
 
-pub const VESTA_FIELD_PARAMS: usize = 131072;
+pub const VESTA_FIELD_PARAMS: usize = 9437256;
 
 pub type Result<T> = std::result::Result<T, VerifyError>;
 
@@ -54,8 +54,9 @@ type BaseSponge = DefaultFqSponge<VestaParameters, SpongeParams>;
 type ScalarSponge = DefaultFrSponge<Fp, SpongeParams>;
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct VerifierIndex<G: KimchiCurve, OpeningProof: OpenProof<G>> {
+#[derive(Serialize, Deserialize, Clone)]
+pub struct VerifierIndex<'a, G: KimchiCurve>
+{
     /// evaluation domain
     #[serde_as(as = "kimchi::o1_utils::serialization::SerdeAs")]
     pub domain: D<G::ScalarField>,
@@ -65,8 +66,8 @@ pub struct VerifierIndex<G: KimchiCurve, OpeningProof: OpenProof<G>> {
     pub zk_rows: u64,
     /// polynomial commitment keys
     #[serde(skip)]
-    #[serde(bound(deserialize = "SrsSized<G, VESTA_FIELD_PARAMS>: Default"))]
-    pub srs: Arc<SrsSized<G, VESTA_FIELD_PARAMS>>,
+    #[serde(bound(deserialize = "&'a SrsSized<G>: Default"))]
+    pub srs: Arc<&'a SrsSized<G>>,
     /// number of public inputs
     pub public: usize,
     /// number of previous evaluation challenges, for recursive proving
@@ -151,8 +152,8 @@ pub struct VerifierIndex<G: KimchiCurve, OpeningProof: OpenProof<G>> {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ContextWithProof {
-    index: VerifierIndex<Vesta, OpeningProof<Vesta>>,
+struct ContextWithProof<'a> {
+    index: VerifierIndex<'a, Vesta>,
     // lagrange_basis: Vec<PolyComm<Vesta>>,
     // group: BWParameters<VestaParameters>,
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
@@ -160,9 +161,390 @@ struct ContextWithProof {
 }
 
 #[repr(C)]
-pub struct SrsSized<G, const N: usize> {
-    pub g: [G; N],
-    pub h: G
+pub struct SrsSized<G> {
+    pub g: [G; VESTA_FIELD_PARAMS],
+    pub h: G,
+}
+
+// impl the trait `Default` is  for `&SrsSized<G, N>`
+impl<G> Default for &SrsSized<G> {
+    fn default() -> Self {
+        unsafe {
+            std::mem::transmute::<&u8, &SrsSized<G>>(&SRS_BYTES[0])
+        }
+    }
+}
+
+impl<G: CommitmentCurve> SRS<G> for SrsSized<G> {
+    fn max_poly_size(&self) -> usize {
+        self.g.len()
+    }
+
+    fn get_lagrange_basis(&self, domain_size: usize) -> Option<&Vec<PolyComm<G>>> {
+        return None;
+    }
+
+    fn blinding_commitment(&self) -> G {
+        self.h
+    }
+
+    /// Commits a polynomial, potentially splitting the result in multiple commitments.
+    fn commit(
+        &self,
+        plnm: &DensePolynomial<G::ScalarField>,
+        num_chunks: usize,
+        max: Option<usize>,
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> BlindedCommitment<G> {
+        self.mask(self.commit_non_hiding(plnm, num_chunks, max), rng)
+    }
+
+    /// Same as [SRS::mask] except that you can pass the blinders manually.
+    fn mask_custom(
+        &self,
+        com: PolyComm<G>,
+        blinders: &PolyComm<G::ScalarField>,
+    ) -> std::result::Result<BlindedCommitment<G>, CommitmentError> {
+        let commitment = com
+            .zip(blinders)
+            .ok_or_else(|| CommitmentError::BlindersDontMatch(blinders.len(), com.len()))?
+            .map(|(g, b)| {
+                let mut g_masked = self.h.mul(b);
+                g_masked.add_assign_mixed(&g);
+                g_masked.into_affine()
+            });
+        Ok(BlindedCommitment {
+            commitment,
+            blinders: blinders.clone(),
+        })
+    }
+
+    /// Turns a non-hiding polynomial commitment into a hidding polynomial commitment. Transforms each given `<a, G>` into `(<a, G> + wH, w)` with a random `w` per commitment.
+    fn mask(
+        &self,
+        comm: PolyComm<G>,
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> BlindedCommitment<G> {
+        let blinders = comm.map(|_| G::ScalarField::rand(rng));
+        self.mask_custom(comm, &blinders).unwrap()
+    }
+
+    /// This function commits a polynomial using the SRS' basis of size `n`.
+    /// - `plnm`: polynomial to commit to with max size of sections
+    /// - `num_chunks`: the number of unshifted commitments to be included in the output polynomial commitment
+    /// - `max`: maximal degree of the polynomial (not inclusive), if none, no degree bound
+    /// The function returns an unbounded commitment vector (which splits the commitment into several commitments of size at most `n`),
+    /// as well as an optional bounded commitment (if `max` is set).
+    /// Note that a maximum degree cannot (and doesn't need to) be enforced via a shift if `max` is a multiple of `n`.
+    fn commit_non_hiding(
+        &self,
+        plnm: &DensePolynomial<G::ScalarField>,
+        num_chunks: usize,
+        max: Option<usize>,
+    ) -> PolyComm<G> {
+        let is_zero = plnm.is_zero();
+
+        let basis_len = self.g.len();
+        let coeffs_len = plnm.coeffs.len();
+
+        let coeffs: Vec<_> = plnm.iter().map(|c| c.into_repr()).collect();
+
+        // chunk while commiting
+        let mut unshifted = vec![];
+        if is_zero {
+            unshifted.push(G::zero());
+        } else {
+            coeffs.chunks(self.g.len()).for_each(|coeffs_chunk| {
+                let chunk = VariableBaseMSM::multi_scalar_mul(&self.g, coeffs_chunk);
+                unshifted.push(chunk.into_affine());
+            });
+        }
+
+        for _ in unshifted.len()..num_chunks {
+            unshifted.push(G::zero());
+        }
+
+        // committing only last chunk shifted to the right edge of SRS
+        let shifted = match max {
+            None => None,
+            Some(max) => {
+                let start = max - (max % basis_len);
+                if is_zero || start >= coeffs_len {
+                    // polynomial is small, nothing was shifted
+                    Some(G::zero())
+                } else if max % basis_len == 0 {
+                    // the number of chunks should tell the verifier everything they need to know
+                    None
+                } else {
+                    // we shift the last chunk to the right as proof of the degree bound
+                    let shifted = VariableBaseMSM::multi_scalar_mul(
+                        &self.g[basis_len - (max % basis_len)..],
+                        &coeffs[start..],
+                    );
+                    Some(shifted.into_affine())
+                }
+            }
+        };
+
+        PolyComm::<G> { unshifted, shifted }
+    }
+
+    fn commit_evaluations_non_hiding(
+        &self,
+        domain: D<G::ScalarField>,
+        plnm: &Evaluations<G::ScalarField, D<G::ScalarField>>,
+    ) -> PolyComm<G> {
+        let basis = self.get_lagrange_basis(domain.size())
+            .unwrap_or_else(|| panic!("lagrange bases for size {} not found", domain.size()));
+        let commit_evaluations = |evals: &Vec<G::ScalarField>, basis: &Vec<PolyComm<G>>| {
+            PolyComm::<G>::multi_scalar_mul(&basis.iter().collect::<Vec<_>>()[..], &evals[..])
+        };
+        match domain.size.cmp(&plnm.domain().size) {
+            std::cmp::Ordering::Less => {
+                let s = (plnm.domain().size / domain.size) as usize;
+                let v: Vec<_> = (0..(domain.size())).map(|i| plnm.evals[s * i]).collect();
+                commit_evaluations(&v, basis)
+            }
+            std::cmp::Ordering::Equal => commit_evaluations(&plnm.evals, basis),
+            std::cmp::Ordering::Greater => {
+                panic!("desired commitment domain size greater than evaluations' domain size")
+            }
+        }
+    }
+
+    fn commit_evaluations(
+        &self,
+        domain: D<G::ScalarField>,
+        plnm: &Evaluations<G::ScalarField, D<G::ScalarField>>,
+        rng: &mut (impl RngCore + CryptoRng),
+    ) -> BlindedCommitment<G> {
+        self.mask(self.commit_evaluations_non_hiding(domain, plnm), rng)
+    }
+}
+
+impl <G: CommitmentCurve> SrsSized<G> {
+    fn verify<EFqSponge, RNG>(
+        &self,
+        group_map: &G::Map,
+        batch: &mut [BatchEvaluationProof<G, EFqSponge, OpeningProof<G>>],
+        rng: &mut RNG,
+    ) -> bool
+        where
+            EFqSponge: FqSponge<G::BaseField, G, G::ScalarField>,
+            RNG: RngCore + CryptoRng,
+            G::BaseField: PrimeField,
+    {
+        // Verifier checks for all i,
+        // c_i Q_i + delta_i = z1_i (G_i + b_i U_i) + z2_i H
+        //
+        // if we sample evalscale at random, it suffices to check
+        //
+        // 0 == sum_i evalscale^i (c_i Q_i + delta_i - ( z1_i (G_i + b_i U_i) + z2_i H ))
+        //
+        // and because each G_i is a multiexp on the same array self.g, we
+        // can batch the multiexp across proofs.
+        //
+        // So for each proof in the batch, we add onto our big multiexp the following terms
+        // evalscale^i c_i Q_i
+        // evalscale^i delta_i
+        // - (evalscale^i z1_i) G_i
+        // - (evalscale^i z2_i) H
+        // - (evalscale^i z1_i b_i) U_i
+
+        // We also check that the sg component of the proof is equal to the polynomial commitment
+        // to the "s" array
+
+        let nonzero_length = self.g.len();
+
+        let max_rounds = math::ceil_log2(nonzero_length);
+
+        let padded_length = 1 << max_rounds;
+
+        let (_, endo_r) = endos::<G>();
+
+        // TODO: This will need adjusting
+        let padding = padded_length - nonzero_length;
+        let mut points = vec![self.h];
+        points.extend(self.g.clone());
+        points.extend(vec![G::zero(); padding]);
+
+        let mut scalars = vec![G::ScalarField::zero(); padded_length + 1];
+        assert_eq!(scalars.len(), points.len());
+
+        // sample randomiser to scale the proofs with
+        let rand_base = G::ScalarField::rand(rng);
+        let sg_rand_base = G::ScalarField::rand(rng);
+
+        let mut rand_base_i = G::ScalarField::one();
+        let mut sg_rand_base_i = G::ScalarField::one();
+
+        for BatchEvaluationProof {
+            sponge,
+            evaluation_points,
+            polyscale,
+            evalscale,
+            evaluations,
+            opening,
+            combined_inner_product,
+        } in batch.iter_mut()
+        {
+            sponge.absorb_fr(&[shift_scalar::<G>(*combined_inner_product)]);
+
+            let t = sponge.challenge_fq();
+            let u: G = to_group(group_map, t);
+
+            let Challenges { chal, chal_inv } = opening.challenges::<EFqSponge>(&endo_r, sponge);
+
+            sponge.absorb_g(&[opening.delta]);
+            let c = ScalarChallenge(sponge.challenge()).to_field(&endo_r);
+
+            // < s, sum_i evalscale^i pows(evaluation_point[i]) >
+            // ==
+            // sum_i evalscale^i < s, pows(evaluation_point[i]) >
+            let b0 = {
+                let mut scale = G::ScalarField::one();
+                let mut res = G::ScalarField::zero();
+                for &e in evaluation_points.iter() {
+                    let term = b_poly(&chal, e);
+                    res += &(scale * term);
+                    scale *= *evalscale;
+                }
+                res
+            };
+
+            let s = b_poly_coefficients(&chal);
+
+            let neg_rand_base_i = -rand_base_i;
+
+            // TERM
+            // - rand_base_i z1 G
+            //
+            // we also add -sg_rand_base_i * G to check correctness of sg.
+            points.push(opening.sg);
+            scalars.push(neg_rand_base_i * opening.z1 - sg_rand_base_i);
+
+            // Here we add
+            // sg_rand_base_i * ( < s, self.g > )
+            // =
+            // < sg_rand_base_i s, self.g >
+            //
+            // to check correctness of the sg component.
+            {
+                let terms: Vec<_> = s.iter().map(|s| sg_rand_base_i * s).collect();
+
+                for (i, term) in terms.iter().enumerate() {
+                    scalars[i + 1] += term;
+                }
+            }
+
+            // TERM
+            // - rand_base_i * z2 * H
+            scalars[0] -= &(rand_base_i * opening.z2);
+
+            // TERM
+            // -rand_base_i * (z1 * b0 * U)
+            scalars.push(neg_rand_base_i * (opening.z1 * b0));
+            points.push(u);
+
+            // TERM
+            // rand_base_i c_i Q_i
+            // = rand_base_i c_i
+            //   (sum_j (chal_invs[j] L_j + chals[j] R_j) + P_prime)
+            // where P_prime = combined commitment + combined_inner_product * U
+            let rand_base_i_c_i = c * rand_base_i;
+            for ((l, r), (u_inv, u)) in opening.lr.iter().zip(chal_inv.iter().zip(chal.iter())) {
+                points.push(*l);
+                scalars.push(rand_base_i_c_i * u_inv);
+
+                points.push(*r);
+                scalars.push(rand_base_i_c_i * u);
+            }
+
+            // TERM
+            // sum_j evalscale^j (sum_i polyscale^i f_i) (elm_j)
+            // == sum_j sum_i evalscale^j polyscale^i f_i(elm_j)
+            // == sum_i polyscale^i sum_j evalscale^j f_i(elm_j)
+            combine_commitments(
+                evaluations,
+                &mut scalars,
+                &mut points,
+                *polyscale,
+                rand_base_i_c_i,
+            );
+
+            scalars.push(rand_base_i_c_i * *combined_inner_product);
+            points.push(u);
+
+            scalars.push(rand_base_i);
+            points.push(opening.delta);
+
+            rand_base_i *= &rand_base;
+            sg_rand_base_i *= &sg_rand_base;
+        }
+
+        // verify the equation
+        let scalars: Vec<_> = scalars.iter().map(|x| x.into_repr()).collect();
+        VariableBaseMSM::multi_scalar_mul(&points, &scalars) == G::Projective::zero()
+    }
+}
+
+pub struct Context<'a, G: KimchiCurve, OpeningProof: OpenProof<G>> {
+    /// The [kimchi::verifier_index::VerifierIndex] associated to the proof
+    pub verifier_index: &'a VerifierIndex<'a, G>,
+
+    /// The proof to verify
+    pub proof: &'a ProverProof<G, OpeningProof>,
+
+    /// The public input used in the creation of the proof
+    pub public_input: &'a [G::ScalarField],
+}
+
+impl<'a, G: KimchiCurve, OpeningProof: OpenProof<G>> Context<'a, G, OpeningProof> {
+    pub fn get_column(&self, col: Column) -> Option<&'a PolyComm<G>> {
+        use Column::*;
+        match col {
+            Witness(i) => Some(&self.proof.commitments.w_comm[i]),
+            Coefficient(i) => Some(&self.verifier_index.coefficients_comm[i]),
+            Permutation(i) => Some(&self.verifier_index.sigma_comm[i]),
+            Z => Some(&self.proof.commitments.z_comm),
+            LookupSorted(i) => Some(&self.proof.commitments.lookup.as_ref()?.sorted[i]),
+            LookupAggreg => Some(&self.proof.commitments.lookup.as_ref()?.aggreg),
+            LookupKindIndex(i) => {
+                Some(self.verifier_index.lookup_index.as_ref()?.lookup_selectors[i].as_ref()?)
+            }
+            LookupTable => None,
+            LookupRuntimeSelector => Some(
+                self.verifier_index
+                    .lookup_index
+                    .as_ref()?
+                    .runtime_tables_selector
+                    .as_ref()?,
+            ),
+            LookupRuntimeTable => self.proof.commitments.lookup.as_ref()?.runtime.as_ref(),
+            Index(t) => {
+                use GateType::*;
+                match t {
+                    Zero => None,
+                    Generic => Some(&self.verifier_index.generic_comm),
+                    Lookup => None,
+                    CompleteAdd => Some(&self.verifier_index.complete_add_comm),
+                    VarBaseMul => Some(&self.verifier_index.mul_comm),
+                    EndoMul => Some(&self.verifier_index.emul_comm),
+                    EndoMulScalar => Some(&self.verifier_index.endomul_scalar_comm),
+                    Poseidon => Some(&self.verifier_index.psm_comm),
+                    CairoClaim | CairoInstruction | CairoFlags | CairoTransition => None,
+                    RangeCheck0 => Some(self.verifier_index.range_check0_comm.as_ref()?),
+                    RangeCheck1 => Some(self.verifier_index.range_check1_comm.as_ref()?),
+                    ForeignFieldAdd => Some(self.verifier_index.foreign_field_add_comm.as_ref()?),
+                    ForeignFieldMul => Some(self.verifier_index.foreign_field_mul_comm.as_ref()?),
+                    Xor16 => Some(self.verifier_index.xor_comm.as_ref()?),
+                    Rot64 => Some(self.verifier_index.rot_comm.as_ref()?),
+                    KeccakRound => todo!(),
+                    KeccakSponge => todo!(),
+                }
+            }
+        }
+    }
 }
 
 static SRS_BYTES: [u8; include_bytes!("../../../srs/vesta.bin").len()] = *include_bytes!("../../../srs/vesta.bin");
@@ -173,11 +555,11 @@ pub fn main() {
     let public_input: Vec<Fp> = input.public_input.iter().map(|x| Fp::from_bytes(x).unwrap()).collect();
     let group_map = BWParameters::<VestaParameters>::setup();
 
-    let srs = unsafe {
-        std::mem::transmute::<&u8, &SrsSized<Vesta, VESTA_FIELD_PARAMS>>(&SRS_BYTES[0])
-    };
-
-    // input.index.srs = Arc::new(srs.clone());
+    // let srs = unsafe {
+    //     std::mem::transmute::<&u8, &SrsSized<Vesta, VESTA_FIELD_PARAMS>>(&SRS_BYTES[0])
+    // };
+    //
+    // input.index.srs = Arc::new(srs);
 
     // batch_verify(&input.index, &group_map, &vec![(input.proof, input.public_input)]);
     batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
@@ -218,9 +600,9 @@ pub fn batch_verify<G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G>>(
 
     //~ 1. Ensure that all the proof's verifier index have a URS of the same length. (TODO: do they have to be the same URS though? should we check for that?)
     // TODO: Account for the different SRS lengths
-    let srs = proofs[0].verifier_index.srs();
+    let srs = &proofs[0].verifier_index.srs;
     for &Context { verifier_index, .. } in proofs {
-        if verifier_index.srs().max_poly_size() != srs.max_poly_size() {
+        if (&verifier_index.srs).max_poly_size() != srs.max_poly_size() {
             return Err(VerifyError::DifferentSRS);
         }
     }
@@ -241,7 +623,8 @@ pub fn batch_verify<G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G>>(
     }
 
     //~ 1. Use the [`PolyCom.verify`](#polynomial-commitments) to verify the partially evaluated proofs.
-    if OpeningProof::verify(srs, group_map, &mut batch, &mut thread_rng()) {
+    // if srs.verify(group_map, &mut (&batch), &mut thread_rng()) {
+    if srs.verify(group_map, batch.as_mut_slice(), &mut thread_rng()) {
         Ok(())
     } else {
         Err(VerifyError::OpenProof)
@@ -389,7 +772,7 @@ fn check_proof_evals_len<G, OpeningProof>(
 }
 
 fn to_batch<'a, G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G>>(
-    verifier_index: &VerifierIndex<G, OpeningProof>,
+    verifier_index: &VerifierIndex<G>,
     proof: &'a ProverProof<G, OpeningProof>,
     public_input: &'a [<G as AffineCurve>::ScalarField],
 ) -> Result<BatchEvaluationProof<'a, G, EFqSponge, OpeningProof>>
@@ -439,21 +822,21 @@ fn to_batch<'a, G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G>>(
                 verifier_index.public,
             ));
         }
-        let lgr_comm = verifier_index
-            .srs()
+        let lgr_comm = (&verifier_index
+            .srs)
             .get_lagrange_basis(verifier_index.domain.size())
             .expect("pre-computed committed lagrange bases not found");
         let com: Vec<_> = lgr_comm.iter().take(verifier_index.public).collect();
         if public_input.is_empty() {
             PolyComm::new(
-                vec![verifier_index.srs().blinding_commitment(); chunk_size],
+                vec![(&verifier_index.srs).blinding_commitment(); chunk_size],
                 None,
             )
         } else {
             let elm: Vec<_> = public_input.iter().map(|s| -*s).collect();
             let public_comm = PolyComm::<G>::multi_scalar_mul(&com, &elm);
-            verifier_index
-                .srs()
+            (&verifier_index
+                .srs)
                 .mask_custom(
                     public_comm.clone(),
                     &public_comm.map(|_| G::ScalarField::one()),
