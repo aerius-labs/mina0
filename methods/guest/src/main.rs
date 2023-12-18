@@ -27,7 +27,7 @@ use kimchi::oracles::OraclesResult;
 use kimchi::plonk_sponge::FrSponge;
 use kimchi::poly_commitment::evaluation_proof::{Challenges, OpeningProof};
 use kimchi::poly_commitment::{OpenProof, PolyComm, SRS};
-use kimchi::poly_commitment::commitment::{b_poly, b_poly_coefficients, BatchEvaluationProof, BlindedCommitment, combine_commitments, combined_inner_product, CommitmentCurve, Evaluation, shift_scalar, to_group};
+use kimchi::poly_commitment::commitment::{b_poly, b_poly_coefficients, BatchEvaluationProof, BlindedCommitment, combine_commitments, CommitmentCurve, Evaluation, shift_scalar, to_group};
 use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverProof};
 use kimchi::verifier_index::{LookupVerifierIndex};
 use kimchi::circuits::wires::COLUMNS;
@@ -37,8 +37,9 @@ use rand::{CryptoRng, RngCore, thread_rng};
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ec::msm::VariableBaseMSM;
 use ark_poly::domain::EvaluationDomain;
-use ark_poly::{univariate::DensePolynomial, Radix2EvaluationDomain as D, Evaluations};
+use ark_poly::{univariate::DensePolynomial, Radix2EvaluationDomain as D, Evaluations, Polynomial};
 use kimchi::alphas::Alphas;
+use kimchi::circuits::polynomials::permutation::vanishes_on_last_n_rows;
 use kimchi::poly_commitment::error::CommitmentError;
 use kimchi::poly_commitment::srs::endos;
 use serde_with::serde_as;
@@ -149,6 +150,22 @@ pub struct VerifierIndex<'a, G: KimchiCurve>
     /// The mapping between powers of alpha and constraints
     #[serde(skip)]
     pub powers_of_alpha: Alphas<G::ScalarField>,
+}
+
+impl<G: KimchiCurve> VerifierIndex<'_, G> {
+    /// Gets srs from [`VerifierIndex`] lazily
+    pub fn srs(&self) -> &Arc<&SrsSized<G>>
+        where
+            G::BaseField: PrimeField,
+    {
+        &self.srs
+    }
+
+    /// Gets permutation_vanishing_polynomial_m from [`VerifierIndex`] lazily
+    pub fn permutation_vanishing_polynomial_m(&self) -> &DensePolynomial<G::ScalarField> {
+        self.permutation_vanishing_polynomial_m
+            .get_or_init(|| vanishes_on_last_n_rows(self.domain, self.zk_rows))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
