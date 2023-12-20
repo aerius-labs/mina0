@@ -1,7 +1,6 @@
 #![no_main]
 #![feature(once_cell)]
 
-use std::array;
 use std::cell::OnceCell;
 use std::sync::Arc;
 use ark_ff::{FftField, Field, One, PrimeField, UniformRand, Zero as _Zero, Zero};
@@ -48,7 +47,7 @@ use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverCommitments, Recur
 
 risc0_zkvm::guest::entry!(main);
 
-pub const VESTA_FIELD_PARAMS: usize = 9437256;
+pub const VESTA_FIELD_PARAMS: usize = 131072;
 
 pub type Result<T> = std::result::Result<T, VerifyError>;
 
@@ -589,8 +588,9 @@ impl<G: CommitmentCurve> SrsSized<G> {
         let rounds = math::ceil_log2(self.g.len());
         let padded_length = 1 << rounds;
 
-        let padding = padded_length - self.g.len();
+        // let padding = padded_length - self.g.len();
         let mut g = self.g.clone();
+        // g.extend(vec![G::zero(); padding]);
 
         let (p, blinding_factor) = combine_polys::<G, D>(plnms, polyscale, self.g.len());
 
@@ -702,7 +702,7 @@ impl<G: CommitmentCurve> SrsSized<G> {
                 })
                 .collect();
 
-            g = <[G; 9437256]>::try_from(G::combine_one_endo(endo_r, endo_q, &g_lo, &g_hi, u_pre)).unwrap();
+            g = <[G; VESTA_FIELD_PARAMS]>::try_from(G::combine_one_endo(endo_r, endo_q, &g_lo, &g_hi, u_pre)).unwrap();
         }
 
         assert!(g.len() == 1);
