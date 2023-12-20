@@ -588,8 +588,10 @@ impl<G: CommitmentCurve> SrsSized<G> {
         let rounds = math::ceil_log2(self.g.len());
         let padded_length = 1 << rounds;
 
-        // let padding = padded_length - self.g.len();
         let mut g = self.g.clone();
+        // TODO: This is not needed because the SRS group elements list will have a length of
+        // power of 2, in this case 2^17. So the padding is not needed.
+        // let padding = padded_length - g.len();
         // g.extend(vec![G::zero(); padding]);
 
         let (p, blinding_factor) = combine_polys::<G, D>(plnms, polyscale, self.g.len());
