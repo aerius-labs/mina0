@@ -7,6 +7,7 @@ use std::io::Write;
 use std::mem;
 use std::path::Path;
 use std::thread;
+use kimchi::bench::BenchmarkCtx;
 
 include!("generated_const_params.rs");
 // #[derive(Debug)]
@@ -14,6 +15,12 @@ include!("generated_const_params.rs");
 pub struct SrsSized<G, const N: usize> {
     pub g: [G; N],
     pub h: G,
+}
+#[repr(C)]
+#[derive(Default, Copy, Clone)]
+pub struct PolyComm<C> {
+    pub unshifted: C,
+    pub shifted: Option<C>,
 }
 
 fn main() {
@@ -71,5 +78,47 @@ fn main() {
         .unwrap();
 
     // Wait for the thread to finish executing
+    handler.join().unwrap();
+
+    // Create a new thread with the specified stack size
+    let builder = thread::Builder::new().stack_size(stack_size);
+
+    let handler = builder
+        .spawn(|| {
+            let ctx = BenchmarkCtx::new(12);
+            let lb = ctx.verifier_index.srs.lagrange_bases.get(&2usize.pow(12)).unwrap();
+
+            let mut polycomm_arr: [PolyComm<Vesta>; VESTA_FIELD_LAGRANGE_BASES_PARAMS] = [PolyComm::default(); VESTA_FIELD_LAGRANGE_BASES_PARAMS];
+            for (i, j) in lb.iter().zip(polycomm_arr.iter_mut()) {
+                *j = PolyComm {
+                    unshifted: i.unshifted[0],
+                    shifted: i.shifted,
+                };
+            }
+
+            println!("creating file");
+            // Open a file in write mode
+            let mut file = File::create("../../srs/lagrange_basis.bin").unwrap();
+
+            // Ensure the type is safe to treat as raw bytes
+            assert_eq!(
+                VESTA_FIELD_LAGRANGE_BASES_PARAMS * mem::size_of::<PolyComm<Vesta>>(),
+                mem::size_of_val(&polycomm_arr)
+            );
+
+            // Use unsafe to get the raw bytes of the object
+            unsafe {
+                let byte_ptr =
+                    &polycomm_arr as *const [PolyComm<Vesta>; VESTA_FIELD_LAGRANGE_BASES_PARAMS] as *const u8;
+                let bytes = std::slice::from_raw_parts(
+                    byte_ptr,
+                    VESTA_FIELD_LAGRANGE_BASES_PARAMS * mem::size_of::<PolyComm<Vesta>>(),
+                );
+                file.write_all(bytes).unwrap();
+            }
+
+        })
+        .unwrap();
+
     handler.join().unwrap();
 }

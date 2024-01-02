@@ -25,11 +25,14 @@ use std::mem;
 use std::time::Duration;
 
 use anyhow::Result;
+use kimchi::poly_commitment::{PolyComm, SRS};
+
+use ark_poly::domain::EvaluationDomain;
 
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof {
     index: VerifierIndex<Vesta, OpeningProof<Vesta>>,
-    // lagrange_basis: Vec<PolyComm<Vesta>>,
+    lagrange_basis: Vec<PolyComm<Vesta>>,
     // group_map: BWParameters<VestaParameters>,
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
@@ -57,9 +60,12 @@ fn main() {
 
     let (proof, public_input) = ctx.create_proof();
 
+    let domain_size = 2_usize.pow(12);
+    let lb = ctx.verifier_index.srs().get_lagrange_basis(domain_size).unwrap().clone();
+
     let ctx_with_proof = ContextWithProof {
         index: ctx.verifier_index,
-        // lagrange_basis: ctx.verifier_index.srs().get_lagrange_basis(ctx.verifier_index.domain.size()).unwrap().clone(),
+        lagrange_basis: lb,
         proof,
         public_input: public_input.into_iter().map(|x| x.to_bytes()).collect(),
     };
