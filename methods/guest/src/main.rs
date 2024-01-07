@@ -45,15 +45,53 @@ use serde_with::serde_as;
 use kimchi::o1_utils;
 use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverCommitments, RecursionChallenge};
 
+#[macro_use]
+extern crate lazy_static;
+
 risc0_zkvm::guest::entry!(main);
 
 pub const VESTA_FIELD_PARAMS: usize = 131072;
+pub const VESTA_FIELD_LAGRANGE_BASES_PARAMS: usize = 4096;
 
 pub type Result<T> = std::result::Result<T, VerifyError>;
 
 type SpongeParams = PlonkSpongeConstantsKimchi;
 type BaseSponge = DefaultFqSponge<VestaParameters, SpongeParams>;
 type ScalarSponge = DefaultFrSponge<Fp, SpongeParams>;
+
+static SRS_BYTES: [u8; include_bytes!("../../../srs/vesta.bin").len()] = *include_bytes!("../../../srs/vesta.bin");
+static LAGRANGE_BASIS_BYTES: [u8; include_bytes!("../../../srs/lagrange_basis.bin").len()] = *include_bytes!("../../../srs/lagrange_basis.bin");
+
+// load lagrange basis from bytes using transmute with lazy static
+
+#[derive(Serialize, Deserialize)]
+struct ContextWithProof<'a, OpeningProof: OpenProof<Vesta>> {
+    index: VerifierIndex<'a, Vesta>,
+    // group_map: BWParameters<VestaParameters>,
+    // lagrange_basis: Vec<PolyComm<Vesta>>,
+    proof: ProverProof<Vesta, OpeningProof>,
+    public_input: Vec<Vec<u8>>,
+}
+
+pub fn main() {
+    // read the input
+    let mut input: ContextWithProof<OpeningProof<Vesta>> = env::read();
+    let public_input: Vec<Fp> = input.public_input.iter().map(|x| Fp::from_bytes(x).unwrap()).collect();
+    let group_map = BWParameters::<VestaParameters>::setup();
+
+    batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
+        Context{
+            verifier_index: &input.index,
+            proof: &input.proof,
+            public_input: &public_input
+        }
+    ]).unwrap();
+
+    // TODO: do something with the input
+
+    // write public output to the journal
+    // let val: u64 = 10;
+}
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone)]
@@ -279,13 +317,6 @@ impl<G: KimchiCurve> VerifierIndex<'_, G> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct ContextWithProof<'a, OpeningProof: OpenProof<Vesta>> {
-    index: VerifierIndex<'a, Vesta>,
-    proof: ProverProof<Vesta, OpeningProof>,
-    public_input: Vec<Vec<u8>>,
-}
-
 #[repr(C)]
 pub struct SrsSized<G> {
     pub g: [G; VESTA_FIELD_PARAMS],
@@ -301,7 +332,21 @@ impl<G> Default for &SrsSized<G> {
     }
 }
 
+// struct LBWrapped<G> {
+//     // create phantom data to make the compiler happy
+//     _phantom: std::marker::PhantomData<G>,
+// }
+//
+// impl<G> LBWrapped<G> {
+//     fn get_lagrange_basis(&self, domain_size: usize) -> Option<&Vec<PolyComm<G>>> {
+//         let lagrange_basis = LAGRANGE_BASIS;
+//         Some(&lagrange_basis)
+//     }
+// }
+
+
 impl<G: CommitmentCurve> SRS<G> for SrsSized<G> {
+
     fn max_poly_size(&self) -> usize {
         self.g.len()
     }
@@ -410,9 +455,12 @@ impl<G: CommitmentCurve> SRS<G> for SrsSized<G> {
         domain: D<G::ScalarField>,
         plnm: &Evaluations<G::ScalarField, D<G::ScalarField>>,
     ) -> PolyComm<G> {
-        let basis = self.get_lagrange_basis(domain.size())
-            .unwrap_or_else(|| panic!("lagrange bases for size {} not found", domain.size()));
-        let commit_evaluations = |evals: &Vec<G::ScalarField>, basis: &Vec<PolyComm<G>>| {
+        // let basis = self.get_lagrange_basis(domain.size())
+            // .unwrap_or_else(|| panic!("lagrange bases for size {} not found", domain.size()));
+        let basis = unsafe {
+            std::mem::transmute::<&u8, &[PolyComm<G>; VESTA_FIELD_LAGRANGE_BASES_PARAMS]>(&LAGRANGE_BASIS_BYTES[0])
+        };
+        let commit_evaluations = |evals: &Vec<G::ScalarField>, basis: &[PolyComm<G>; VESTA_FIELD_LAGRANGE_BASES_PARAMS]| {
             PolyComm::<G>::multi_scalar_mul(&basis.iter().collect::<Vec<_>>()[..], &evals[..])
         };
         match domain.size.cmp(&plnm.domain().size) {
@@ -855,28 +903,6 @@ impl<
     {
         srs.verify(group_map, batch, rng)
     }
-}
-
-static SRS_BYTES: [u8; include_bytes!("../../../srs/vesta.bin").len()] = *include_bytes!("../../../srs/vesta.bin");
-
-pub fn main() {
-    // read the input
-    let mut input: ContextWithProof<OpeningProof<Vesta>> = env::read();
-    let public_input: Vec<Fp> = input.public_input.iter().map(|x| Fp::from_bytes(x).unwrap()).collect();
-    let group_map = BWParameters::<VestaParameters>::setup();
-
-    batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
-        Context{
-            verifier_index: &input.index,
-            proof: &input.proof,
-            public_input: &public_input
-        }
-    ]).unwrap();
-
-    // TODO: do something with the input
-
-    // write public output to the journal
-    // let val: u64 = 10;
 }
 
 pub struct Challenges<F> {
@@ -1606,10 +1632,14 @@ fn to_batch<'a, G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G>>(
                 verifier_index.public,
             ));
         }
-        let lgr_comm = (&verifier_index
-            .srs)
-            .get_lagrange_basis(verifier_index.domain.size())
-            .expect("pre-computed committed lagrange bases not found");
+        // let lgr_comm = (&verifier_index
+        //     .srs)
+        //     .get_lagrange_basis(verifier_index.domain.size())
+        //     .expect("pre-computed committed lagrange bases not found");
+
+        let lgr_comm = unsafe {
+            std::mem::transmute::<&u8, &[PolyComm<G>; VESTA_FIELD_LAGRANGE_BASES_PARAMS]>(&LAGRANGE_BASIS_BYTES[0])
+        };
         let com: Vec<_> = lgr_comm.iter().take(verifier_index.public).collect();
         if public_input.is_empty() {
             PolyComm::new(
