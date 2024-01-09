@@ -30,7 +30,8 @@ use kimchi::poly_commitment::{PolyComm, SRS};
 use ark_poly::domain::EvaluationDomain;
 use kimchi::alphas::Alphas;
 use kimchi::circuits::berkeley_columns::Column;
-use kimchi::circuits::expr::{Linearization, PolishToken};
+use kimchi::circuits::constraints::FeatureFlags;
+use kimchi::circuits::expr::{FeatureFlag, Linearization, PolishToken};
 use kimchi::groupmap::BWParameters;
 
 #[derive(Serialize, Deserialize)]
@@ -38,8 +39,7 @@ struct ContextWithProof {
     index: VerifierIndex<Vesta, OpeningProof<Vesta>>,
     // lagrange_basis: Vec<PolyComm<Vesta>>,
     // group_map: BWParameters<VestaParameters>,
-    alphas: Alphas<Vesta::ScalarField>,
-    linearization: Linearization<Vec<PolishToken<Vesta::ScalarField, Column>>, Column>,
+    feature_flags: FeatureFlags,
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
 }
@@ -50,15 +50,13 @@ fn main() {
     let ctx = BenchmarkCtx::new(12);
     let (proof, public_input) = ctx.create_proof();
 
-    let alphas = ctx.verifier_index.powers_of_alpha.clone();
-    let linearization = ctx.verifier_index.linearization.clone();
+    let feature_flags = ctx.index.cs.feature_flags.clone();
 
     let ctx_with_proof = ContextWithProof {
         index: ctx.verifier_index,
         // lagrange_basis: lb,
         // group_map: ctx.group_map,
-        alphas: alphas,
-        linearization: linearization,
+        feature_flags,
         proof,
         public_input: public_input.clone().into_iter().map(|x| x.to_bytes()).collect(),
     };
