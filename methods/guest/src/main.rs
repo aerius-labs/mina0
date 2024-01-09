@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ark_ff::{FftField, Field, One, PrimeField, UniformRand, Zero as _Zero, Zero};
 use kimchi::circuits::argument::ArgumentType;
 use kimchi::circuits::berkeley_columns::Column;
-use kimchi::circuits::constraints::ConstraintSystem;
+use kimchi::circuits::constraints::{ConstraintSystem, FeatureFlags};
 use kimchi::circuits::expr::{Constants, Linearization, PolishToken};
 use kimchi::circuits::gate::GateType;
 use kimchi::circuits::lookup::lookups::LookupPattern;
@@ -31,7 +31,8 @@ use kimchi::circuits::wires::COLUMNS;
 use risc0_zkvm::guest::env;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use rand::{CryptoRng, RngCore, thread_rng};
-use ark_ec::{AffineCurve, ProjectiveCurve};
+use ark_ec::{AffineCurve, ModelParameters, ProjectiveCurve};
+use ark_ec::group::Group;
 use ark_ec::msm::VariableBaseMSM;
 use ark_poly::domain::EvaluationDomain;
 use ark_poly::{univariate::DensePolynomial, Radix2EvaluationDomain as D, Evaluations, Polynomial};
@@ -40,6 +41,7 @@ use kimchi::bench::BenchmarkCtx;
 use kimchi::circuits::lookup::index::LookupSelectors;
 use kimchi::circuits::polynomials::permutation::{vanishes_on_last_n_rows, zk_w};
 use kimchi::circuits::scalars::RandomOracles;
+use kimchi::linearization::expr_linearization;
 use kimchi::poly_commitment::error::CommitmentError;
 use kimchi::poly_commitment::srs::endos;
 use serde_with::serde_as;
@@ -64,10 +66,9 @@ static LAGRANGE_BASIS_BYTES: [u8; include_bytes!("../../../srs/lagrange_basis.bi
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof<'a, OpeningProof: OpenProof<Vesta>> {
     index: VerifierIndex<'a, Vesta>,
+    feature_flags: FeatureFlags,
     // group_map: BWParameters<VestaParameters>,
     // lagrange_basis: Vec<PolyComm<Vesta>>,
-    alphas: Alphas<Vesta::ScalarField>,
-    linearization: Linearization<Vec<PolishToken<Vesta::ScalarField, Column>>, Column>,
     proof: ProverProof<Vesta, OpeningProof>,
     public_input: Vec<Vec<u8>>,
 }
@@ -80,6 +81,7 @@ pub struct PolyCommCustom<C> {
 }
 
 pub fn main() {
+
     // read the input
     let mut input: ContextWithProof<OpeningProof<Vesta>> = env::read();
 
@@ -87,12 +89,12 @@ pub fn main() {
     let group_map = BWParameters::<VestaParameters>::setup();
 
     let vi = &mut input.index;
-    // vi.powers_of_alpha.register(ArgumentType::Permutation, permutation::CONSTRAINTS);
-    vi.powers_of_alpha = input.alphas;
-    vi.linearization = input.linearization;
+    let (linearization, powers_of_alpha) = expr_linearization(Some(&input.feature_flags), true);
+    vi.linearization = linearization;
+    vi.powers_of_alpha = powers_of_alpha;
 
     batch_verify::<Vesta, BaseSponge, ScalarSponge, OpeningProof<Vesta>>(&group_map, &vec![
-        Context{
+        Context {
             verifier_index: &input.index,
             proof: &input.proof,
             public_input: &public_input
@@ -527,7 +529,8 @@ impl <G: CommitmentCurve> SrsSized<G> {
         // TODO: This will need adjusting
         let padding = padded_length - nonzero_length;
         let mut points = vec![self.h];
-        points.extend(self.g.clone());
+
+        points.extend(&self.g);
         points.extend(vec![G::zero(); padding]);
 
         let mut scalars = vec![G::ScalarField::zero(); padded_length + 1];
@@ -1466,8 +1469,6 @@ pub fn batch_verify<'a, G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G, SRS 
             public_input,
         )?);
     }
-
-    panic!("pushed to batch");
 
     if OpeningProof::verify(*srs, group_map, batch.as_mut_slice(), &mut thread_rng()) {
         Ok(())
