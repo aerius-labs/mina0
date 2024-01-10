@@ -3,7 +3,7 @@
 // The ELF is used for proving and the ID is used for verification.
 use kimchi::bench::BenchmarkCtx;
 
-use kimchi::mina_curves::pasta::{Vesta};
+use kimchi::mina_curves::pasta::{Vesta, VestaParameters};
 use kimchi::o1_utils::FieldHelpers;
 use kimchi::poly_commitment::evaluation_proof::OpeningProof;
 use kimchi::proof::ProverProof;
@@ -25,12 +25,21 @@ use std::mem;
 use std::time::Duration;
 
 use anyhow::Result;
+use kimchi::poly_commitment::{PolyComm, SRS};
+
+use ark_poly::domain::EvaluationDomain;
+use kimchi::alphas::Alphas;
+use kimchi::circuits::berkeley_columns::Column;
+use kimchi::circuits::constraints::FeatureFlags;
+use kimchi::circuits::expr::{FeatureFlag, Linearization, PolishToken};
+use kimchi::groupmap::BWParameters;
 
 #[derive(Serialize, Deserialize)]
 struct ContextWithProof {
     index: VerifierIndex<Vesta, OpeningProof<Vesta>>,
     // lagrange_basis: Vec<PolyComm<Vesta>>,
     // group_map: BWParameters<VestaParameters>,
+    feature_flags: FeatureFlags,
     proof: ProverProof<Vesta, OpeningProof<Vesta>>,
     public_input: Vec<Vec<u8>>,
 }
@@ -38,30 +47,18 @@ fn main() {
     // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
     env_logger::init();
 
-    // An executor environment describes the configurations for the zkVM
-    // including program inputs.
-    // An default ExecutorEnv can be created like so:
-    // `let env = ExecutorEnv::builder().build().unwrap();`
-    // However, this `env` does not have any inputs.
-    //
-    // To add add guest input to the executor environment, use
-    // ExecutorEnvBuilder::write().
-    // To access this method, you'll need to use ExecutorEnv::builder(), which
-    // creates an ExecutorEnvBuilder. When you're done adding input, call
-    // ExecutorEnvBuilder::build().
-
     let ctx = BenchmarkCtx::new(12);
-
-    // let srs = SRS::<Vesta>::deserialize(&mut rmp_serde::Deserializer::new(BufReader::new(&SRS_BYTES[..]))).unwrap();
-    // ctx.verifier_index.srs = Arc::new(srs);
-
     let (proof, public_input) = ctx.create_proof();
+
+    let feature_flags = ctx.index.cs.feature_flags.clone();
 
     let ctx_with_proof = ContextWithProof {
         index: ctx.verifier_index,
-        // lagrange_basis: ctx.verifier_index.srs().get_lagrange_basis(ctx.verifier_index.domain.size()).unwrap().clone(),
+        // lagrange_basis: lb,
+        // group_map: ctx.group_map,
+        feature_flags,
         proof,
-        public_input: public_input.into_iter().map(|x| x.to_bytes()).collect(),
+        public_input: public_input.clone().into_iter().map(|x| x.to_bytes()).collect(),
     };
 
     println!("{}", mem::size_of_val(&ctx_with_proof));
@@ -82,9 +79,6 @@ fn main() {
         let _output: ContextWithProof = receipt.journal.decode().unwrap();
     }
 
-    // Optional: Verify receipt to confirm that recipients will also be able to
-    // verify your receipt
-    // receipt.verify(KIMCHI0_ID).unwrap();
 }
 
 fn run_bonsai(input_data: ContextWithProof) -> Result<()> {
