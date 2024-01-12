@@ -4,5 +4,3 @@
 Cargo.lock
 methods/guest/Cargo.lock
 target/
-
-**/*.bin
