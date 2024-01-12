@@ -15,6 +15,7 @@ serde = "1.0"
 ark-ff = "0.3.0"
 ark-ec = "0.3.0"
 ark-poly = "0.3.0"
+ark-std = "0.3.0"
 anyhow = "1.0.75"
 rand = "0.8.5"
 serde_with = { version = "1.14.0", features = [] }
