@@ -1,3 +1,4 @@
+use kimchi::bench::BenchmarkCtx;
 use kimchi::mina_curves::pasta::Vesta;
 use kimchi::poly_commitment::srs::SRS;
 use num_traits::identities::Zero;
@@ -7,7 +8,6 @@ use std::io::Write;
 use std::mem;
 use std::path::Path;
 use std::thread;
-use kimchi::bench::BenchmarkCtx;
 
 include!("generated_const_params.rs");
 // #[derive(Debug)]
@@ -86,9 +86,15 @@ fn main() {
     let handler = builder
         .spawn(|| {
             let ctx = BenchmarkCtx::new(12);
-            let lb = ctx.verifier_index.srs.lagrange_bases.get(&2usize.pow(12)).unwrap();
+            let lb = ctx
+                .verifier_index
+                .srs
+                .lagrange_bases
+                .get(&2usize.pow(12))
+                .unwrap();
 
-            let mut polycomm_arr: [PolyComm<Vesta>; VESTA_FIELD_LAGRANGE_BASES_PARAMS] = [PolyComm::default(); VESTA_FIELD_LAGRANGE_BASES_PARAMS];
+            let mut polycomm_arr: [PolyComm<Vesta>; VESTA_FIELD_LAGRANGE_BASES_PARAMS] =
+                [PolyComm::default(); VESTA_FIELD_LAGRANGE_BASES_PARAMS];
             for (i, j) in lb.iter().zip(polycomm_arr.iter_mut()) {
                 *j = PolyComm {
                     unshifted: i.unshifted[0],
@@ -108,15 +114,15 @@ fn main() {
 
             // Use unsafe to get the raw bytes of the object
             unsafe {
-                let byte_ptr =
-                    &polycomm_arr as *const [PolyComm<Vesta>; VESTA_FIELD_LAGRANGE_BASES_PARAMS] as *const u8;
+                let byte_ptr = &polycomm_arr
+                    as *const [PolyComm<Vesta>; VESTA_FIELD_LAGRANGE_BASES_PARAMS]
+                    as *const u8;
                 let bytes = std::slice::from_raw_parts(
                     byte_ptr,
                     VESTA_FIELD_LAGRANGE_BASES_PARAMS * mem::size_of::<PolyComm<Vesta>>(),
                 );
                 file.write_all(bytes).unwrap();
             }
-
         })
         .unwrap();
 

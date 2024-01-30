@@ -1,12 +1,11 @@
+use kimchi::bench::BenchmarkCtx;
 use kimchi::mina_curves::pasta::Vesta;
 use kimchi::poly_commitment::srs::SRS;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use kimchi::bench::BenchmarkCtx;
 
 fn main() {
-
     // load vesta srs from file
     let srs_path = "../srs".to_string();
 
@@ -27,7 +26,12 @@ fn main() {
     let srs_group_elements_len = srs.g.len();
     let ctx = BenchmarkCtx::new(12);
 
-    let lb = ctx.verifier_index.srs.lagrange_bases.get(&2usize.pow(12)).unwrap();
+    let lb = ctx
+        .verifier_index
+        .srs
+        .lagrange_bases
+        .get(&2usize.pow(12))
+        .unwrap();
 
     // write vesta field parameters to a json file
     let vesta_field_params_path = Path::new("build_srs_raw").join("generated_const_params.rs");
