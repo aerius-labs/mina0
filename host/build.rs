@@ -35,7 +35,7 @@ fn main() {
 
     // write vesta field parameters to a json file
     let vesta_field_params_path = Path::new("build_srs_raw").join("generated_const_params.rs");
-    let mut vesta_field_params_file =
+    let vesta_field_params_file =
         File::create(vesta_field_params_path).expect("failed to create vesta field params file");
 
     // write vesta field as a const to a rust file
@@ -43,11 +43,12 @@ fn main() {
         "pub const VESTA_FIELD_PARAMS: usize = {};\npub const VESTA_FIELD_LAGRANGE_BASES_PARAMS: usize = {};\n",
         srs_group_elements_len, lb.len()
     );
-    write!(vesta_field_params_file, "{}", vesta_field_params)
+    write!(
+        vesta_field_params_file, "{}", vesta_field_params)
         .expect("failed to write vesta field params to file");
 
     let second_build_folder = Path::new("build_srs_raw");
-    assert!(std::env::set_current_dir(&second_build_folder).is_ok());
+    assert!(std::env::set_current_dir(second_build_folder).is_ok());
 
     // compile and run main.rs in build_srs_raw
     // let output = std::process::Command::new("cargo")
