@@ -35,7 +35,7 @@ fn main() {
 
     // write vesta field parameters to a json file
     let vesta_field_params_path = Path::new("build_srs_raw").join("generated_const_params.rs");
-    let vesta_field_params_file =
+    let mut vesta_field_params_file =
         File::create(vesta_field_params_path).expect("failed to create vesta field params file");
 
     // write vesta field as a const to a rust file
