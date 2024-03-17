@@ -7,8 +7,8 @@ build = "build.rs"
 
 [dependencies]
 methods = { path = "../methods" }
-risc0-zkvm = { version = "0.19.1" }
-bonsai-sdk = "0.5.1"
+risc0-zkvm = { version = "0.20.1" }
+bonsai-sdk = "0.6.1"
 env_logger = "0.10"
 serde = "1.0"
 kimchi = { git = "https://github.com/aerius-labs/proof-systems.git", branch = "master" }
