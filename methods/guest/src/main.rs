@@ -1,6 +1,9 @@
 #![no_main]
 #![feature(once_cell)]
 
+mod fq;
+mod biginteger;
+
 use std::cell::OnceCell;
 use std::ops::AddAssign;
 use std::sync::Arc;
@@ -1989,6 +1992,53 @@ fn to_batch<'a, G, EFqSponge, EFrSponge, OpeningProof: OpenProof<G>>(
 pub struct VariableBaseMSMCustom;
 
 impl VariableBaseMSMCustom {
+
+    // #[inline(always)]
+    // pub fn multi_scalar_mul<G: CommitmentCurve>(
+    //     srs: &SrsSized<G>,
+    //     bases: &[G],
+    //     scalars: &[G::ScalarField],
+    // ) -> G::Projective {
+    //     const OFFSET: usize = 1 + VESTA_FIELD_PARAMS;
+    //
+    //     let mut res = G::Projective::zero();
+    //
+    //     if !scalars[0].is_zero() {
+    //         if scalars[0].is_one() {
+    //             res.add_assign_mixed(&srs.h);
+    //         } else {
+    //             res.add_assign(G::mul(&srs.h, scalars[0]));
+    //         }
+    //     }
+    //
+    //     for i in 0..VESTA_FIELD_PARAMS {
+    //         if scalars[1 + i].is_zero() {
+    //             continue;
+    //         }
+    //
+    //         if scalars[1 + i].is_one() {
+    //             res.add_assign_mixed(&srs.g[i]);
+    //         } else {
+    //             res.add_assign(G::mul(&srs.g[i], scalars[i + 1]));
+    //         }
+    //
+    //     }
+    //
+    //     for i in 0..bases.len() {
+    //         if scalars[OFFSET + i].is_zero() {
+    //             continue;
+    //         }
+    //
+    //         if scalars[OFFSET + i].is_one() {
+    //             res.add_assign_mixed(&bases[i]);
+    //         } else {
+    //             res.add_assign(G::mul(&bases[i], scalars[OFFSET + 1]));
+    //         }
+    //     }
+    //
+    //     res
+    // }
+
     pub fn multi_scalar_mul<G: AffineCurve>(
         srs: &SrsSized<G>,
         bases: &[G],
